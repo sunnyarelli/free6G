@@ -1,0 +1,58 @@
+# free6G gNB: connects to 6g-core, ZeroMQ virtual radio to 6g-ue (no SDR needed).
+# Band 3 FDD, 20 MHz, 15 kHz SCS. PLMN/TAC/slice match the 6g-core defaults.
+
+cu_cp:
+  amf:
+    addrs: 127.0.0.18          # 6g-core AMF N2 address
+    port: 38412
+    bind_addrs: 127.0.0.1
+    supported_tracking_areas:
+      - tac: 1
+        plmn_list:
+          - plmn: "20893"
+            tai_slice_support_list:
+              - sst: 1
+                sd: 66051      # 0x010203
+
+cu_up:
+  ngu:
+    socket:
+      - bind_addr: 127.0.0.1   # N3 towards 6g-core UPF (127.0.0.8)
+
+ru_sdr:
+  device_driver: zmq
+  device_args: tx_port=tcp://127.0.0.1:2000,rx_port=tcp://127.0.0.1:2001,base_srate=23.04e6
+  srate: 23.04
+  tx_gain: 75
+  rx_gain: 75
+
+cell_cfg:
+  dl_arfcn: 368500
+  band: 3
+  channel_bandwidth_MHz: 20
+  common_scs: 15
+  plmn: "20893"
+  tac: 1
+  pci: 1
+  pdcch:
+    common:
+      ss0_index: 0
+      coreset0_index: 12
+    dedicated:
+      ss2_type: common
+      dci_format_0_1_and_1_1: false
+  prach:
+    prach_config_index: 1
+  pdsch:
+    mcs_table: qam64
+  pusch:
+    mcs_table: qam64
+
+log:
+  filename: /tmp/free6g_gnb.log
+  all_level: warning
+
+pcap:
+  mac_enable: false
+  ngap_enable: true
+  ngap_filename: /tmp/free6g_gnb_ngap.pcap

@@ -1,0 +1,389 @@
+package context
+
+import (
+	"context"
+	"fmt"
+	"math/rand"
+	"os"
+	"strconv"
+	"strings"
+	"sync"
+	"sync/atomic"
+	"time"
+
+	"github.com/free5gc/openapi/models"
+	"github.com/free5gc/openapi/oauth"
+	"github.com/free5gc/udr/internal/logger"
+	"github.com/free5gc/udr/pkg/factory"
+)
+
+var udrContext = UDRContext{}
+
+type subsId = string
+
+type UDRServiceType int
+
+const (
+	NUDR_DR UDRServiceType = iota
+)
+
+func Init() {
+	udrContext.Name = "udr"
+	udrContext.EeSubscriptionIDGenerator.Store(0)
+	udrContext.SdmSubscriptionIDGenerator.Store(0)
+	udrContext.SubscriptionDataSubscriptionIDGenerator = 1
+	udrContext.PolicyDataSubscriptionIDGenerator = 1
+	udrContext.SubscriptionDataSubscriptions = make(map[subsId]*SubscriptionDataSubscriptionRecord)
+	udrContext.PolicyDataSubscriptions = make(map[subsId]*PolicyDataSubscriptionRecord)
+	udrContext.InfluenceDataSubscriptionIDGenerator = rand.New(rand.NewSource(time.Now().UTC().UnixNano()))
+
+	serviceName := []models.Nrf_NFMgmt_ServiceName{
+		models.Nrf_NFMgmt_ServiceName_NUDR_DR,
+	}
+	udrContext.NrfUri = fmt.Sprintf("%s://%s:%d", models.UriScheme_HTTPS, udrContext.RegisterIPv4, 29510)
+	initUdrContext()
+
+	config := factory.UdrConfig
+	udrContext.NfService = initNfService(serviceName, config.Info.Version)
+}
+
+type UDRContext struct {
+	Name                                    string
+	UriScheme                               models.UriScheme
+	BindingIPv4                             string
+	SBIPort                                 int
+	NfService                               map[models.Nrf_NFMgmt_ServiceName]models.Nrf_NFMgmt_NFService
+	RegisterIPv4                            string // IP register to NRF
+	HttpIPv6Address                         string
+	NfId                                    string
+	NrfUri                                  string
+	NrfCertPem                              string
+	EeSubscriptionIDGenerator               atomic.Uint64
+	SdmSubscriptionIDGenerator              atomic.Uint64
+	SubscriptionDataSubscriptionIDGenerator int
+	PolicyDataSubscriptionIDGenerator       int
+	InfluenceDataSubscriptionIDGenerator    *rand.Rand
+	UESubsCollection                        sync.Map // map[ueId]*UESubsData
+	UEGroupCollection                       sync.Map // map[ueGroupId]*UEGroupSubsData
+	SubscriptionDataSubscriptions           map[subsId]*SubscriptionDataSubscriptionRecord
+	PolicyDataSubscriptions                 map[subsId]*PolicyDataSubscriptionRecord
+	InfluenceDataSubscriptions              sync.Map
+	appDataInfluDataSubscriptionIdGenerator uint64
+	mtx                                     sync.RWMutex
+	OAuth2Required                          bool
+}
+
+// UESubsData holds the per-UE subscriptions. The embedded mutex guards both maps:
+// take Lock() for any write and RLock() for reads.
+type UESubsData struct {
+	sync.RWMutex
+	EeSubscriptionCollection map[subsId]*EeSubscriptionCollection
+	SdmSubscriptions         map[subsId]*models.Udr_DR_SdmSubscription
+}
+
+type UEGroupSubsData struct {
+	EeSubscriptions map[subsId]*models.Udr_DR_EeSubscription
+}
+
+type EeSubscriptionCollection struct {
+	EeSubscriptions      *models.Udr_DR_EeSubscription
+	AmfSubscriptionInfos []models.Udr_DR_AmfSubscriptionInfo
+}
+
+type SubscriptionCallbackTarget struct {
+	ServiceName  models.Nrf_NFMgmt_ServiceName
+	NfType       models.Nrf_NFMgmt_NFType
+	NfInstanceID string
+}
+
+type SubscriptionDataSubscriptionRecord struct {
+	Subscription   *models.Udr_DR_SubscriptionDataSubscriptions
+	CallbackTarget SubscriptionCallbackTarget
+}
+
+type PolicyDataSubscriptionRecord struct {
+	Subscription   *models.Udr_DR_PolicyDataSubscription
+	CallbackTarget SubscriptionCallbackTarget
+}
+
+type InfluenceDataSubscriptionRecord struct {
+	Subscription   *models.Udr_DR_TrafficInfluSub
+	CallbackTarget SubscriptionCallbackTarget
+}
+
+type NFContext interface {
+	AuthorizationCheck(token string, serviceName models.Nrf_NFMgmt_ServiceName) error
+}
+
+var _ NFContext = &UDRContext{}
+
+// Reset UDR Context
+func (context *UDRContext) Reset() {
+	context.UESubsCollection.Range(func(key, value interface{}) bool {
+		context.UESubsCollection.Delete(key)
+		return true
+	})
+	context.UEGroupCollection.Range(func(key, value interface{}) bool {
+		context.UEGroupCollection.Delete(key)
+		return true
+	})
+	for key := range context.SubscriptionDataSubscriptions {
+		delete(context.SubscriptionDataSubscriptions, key)
+	}
+	for key := range context.PolicyDataSubscriptions {
+		delete(context.PolicyDataSubscriptions, key)
+	}
+	context.InfluenceDataSubscriptions.Range(func(key, value interface{}) bool {
+		context.InfluenceDataSubscriptions.Delete(key)
+		return true
+	})
+	context.EeSubscriptionIDGenerator.Store(0)
+	context.SdmSubscriptionIDGenerator.Store(0)
+	context.SubscriptionDataSubscriptionIDGenerator = 1
+	context.PolicyDataSubscriptionIDGenerator = 1
+	context.InfluenceDataSubscriptionIDGenerator = rand.New(rand.NewSource(time.Now().UTC().UnixNano()))
+	context.UriScheme = models.UriScheme_HTTPS
+	context.Name = "udr"
+}
+
+func initUdrContext() {
+	config := factory.UdrConfig
+	logger.UtilLog.Infof("udrconfig Info: Version[%s] Description[%s]", config.Info.Version, config.Info.Description)
+	configuration := config.Configuration
+	udrContext.NfId = config.GetNfInstanceId()
+	udrContext.RegisterIPv4 = factory.UDR_DEFAULT_IPV4 // default localhost
+	udrContext.SBIPort = factory.UDR_DEFAULT_PORT_INT  // default port
+	if sbi := configuration.Sbi; sbi != nil {
+		udrContext.UriScheme = models.UriScheme(sbi.Scheme)
+		if sbi.RegisterIPv4 != "" {
+			udrContext.RegisterIPv4 = sbi.RegisterIPv4
+		}
+		if sbi.Port != 0 {
+			udrContext.SBIPort = sbi.Port
+		}
+
+		udrContext.BindingIPv4 = os.Getenv(sbi.BindingIPv4)
+		if udrContext.BindingIPv4 != "" {
+			logger.UtilLog.Info("Parsing ServerIPv4 address from ENV Variable.")
+		} else {
+			udrContext.BindingIPv4 = sbi.BindingIPv4
+			if udrContext.BindingIPv4 == "" {
+				logger.UtilLog.Warn("Error parsing ServerIPv4 address as string. Using the 0.0.0.0 address as default.")
+				udrContext.BindingIPv4 = "0.0.0.0"
+			}
+		}
+	}
+	if configuration.NrfUri != "" {
+		udrContext.NrfUri = configuration.NrfUri
+	} else {
+		logger.UtilLog.Warn("NRF Uri is empty! Using localhost as NRF IPv4 address.")
+		udrContext.NrfUri = fmt.Sprintf("%s://%s:%d", udrContext.UriScheme, "127.0.0.1", 29510)
+	}
+	udrContext.NrfCertPem = configuration.NrfCertPem
+}
+
+func initNfService(serviceName []models.Nrf_NFMgmt_ServiceName, version string) (
+	nfService map[models.Nrf_NFMgmt_ServiceName]models.Nrf_NFMgmt_NFService,
+) {
+	versionUri := "v" + strings.Split(version, ".")[0]
+	nfService = make(map[models.Nrf_NFMgmt_ServiceName]models.Nrf_NFMgmt_NFService)
+	for idx, name := range serviceName {
+		nfService[name] = models.Nrf_NFMgmt_NFService{
+			ServiceInstanceId: strconv.Itoa(idx),
+			ServiceName:       name,
+			Versions: []models.Nrf_NFMgmt_NFServiceVersion{
+				{
+					ApiFullVersion:  version,
+					ApiVersionInUri: versionUri,
+				},
+			},
+			Scheme:          udrContext.UriScheme,
+			NfServiceStatus: models.Nrf_NFMgmt_NFServiceStatus_REGISTERED,
+			ApiPrefix:       GetIPv4Uri(),
+			IpEndPoints: []models.Nrf_NFMgmt_IpEndPoint{
+				{
+					Ipv4Address: udrContext.RegisterIPv4,
+					Transport:   models.Nrf_NFMgmt_TransportProtocol_TCP,
+					Port:        int32(udrContext.SBIPort),
+				},
+			},
+		}
+	}
+
+	return
+}
+
+func GetIPv4Uri() string {
+	return fmt.Sprintf("%s://%s:%d", udrContext.UriScheme, udrContext.RegisterIPv4, udrContext.SBIPort)
+}
+
+func (context *UDRContext) GetIPv4GroupUri(udrServiceType UDRServiceType) string {
+	var serviceUri string
+
+	switch udrServiceType {
+	case NUDR_DR:
+		serviceUri = factory.UdrDrResUriPrefix
+	default:
+		serviceUri = ""
+	}
+
+	return fmt.Sprintf("%s://%s:%d%s", context.UriScheme, context.RegisterIPv4, context.SBIPort, serviceUri)
+}
+
+// GetOrCreateUESubsData returns the UESubsData of ueId, creating it if absent.
+func (context *UDRContext) GetOrCreateUESubsData(ueId string) *UESubsData {
+	value, _ := context.UESubsCollection.LoadOrStore(ueId, new(UESubsData))
+	return value.(*UESubsData)
+}
+
+// NewSdmSubscriptionID returns a unique SDM subscription ID (starting from 1).
+func (context *UDRContext) NewSdmSubscriptionID() string {
+	return strconv.FormatUint(context.SdmSubscriptionIDGenerator.Add(1), 10)
+}
+
+// NewEeSubscriptionID returns a unique EE subscription ID (starting from 1).
+func (context *UDRContext) NewEeSubscriptionID() string {
+	return strconv.FormatUint(context.EeSubscriptionIDGenerator.Add(1), 10)
+}
+
+// Create new UDR context
+func GetSelf() *UDRContext {
+	return &udrContext
+}
+
+func (context *UDRContext) NewAppDataInfluDataSubscriptionID() uint64 {
+	context.mtx.Lock()
+	defer context.mtx.Unlock()
+	context.appDataInfluDataSubscriptionIdGenerator++
+	return context.appDataInfluDataSubscriptionIdGenerator
+}
+
+func NewInfluenceDataSubscriptionId() string {
+	if GetSelf().InfluenceDataSubscriptionIDGenerator == nil {
+		GetSelf().InfluenceDataSubscriptionIDGenerator = rand.New(rand.NewSource(time.Now().UTC().UnixNano()))
+	}
+	return fmt.Sprintf("%08x", GetSelf().InfluenceDataSubscriptionIDGenerator.Uint32())
+}
+
+// The subs-to-notify maps below are written by HTTP handlers while notification
+// goroutines read them; every access must go through context.mtx. Snapshots copy
+// the record pointers under the lock so callers can fan out unlocked — safe
+// because handlers only insert, delete, or replace whole records and never
+// mutate a record in place.
+
+// CreateSubscriptionDataSubscription allocates the subscription ID and inserts
+// the record inside one critical section so concurrent POSTs can neither race
+// on the map nor hand out duplicate IDs.
+func (context *UDRContext) CreateSubscriptionDataSubscription(
+	subscription *models.Udr_DR_SubscriptionDataSubscriptions,
+	callbackTarget SubscriptionCallbackTarget,
+) string {
+	context.mtx.Lock()
+	defer context.mtx.Unlock()
+	newSubscriptionID := strconv.Itoa(context.SubscriptionDataSubscriptionIDGenerator)
+	context.SubscriptionDataSubscriptions[newSubscriptionID] = &SubscriptionDataSubscriptionRecord{
+		Subscription:   subscription,
+		CallbackTarget: callbackTarget,
+	}
+	context.SubscriptionDataSubscriptionIDGenerator++
+	return newSubscriptionID
+}
+
+func (context *UDRContext) DeleteSubscriptionDataSubscription(subsId string) bool {
+	context.mtx.Lock()
+	defer context.mtx.Unlock()
+	if _, ok := context.SubscriptionDataSubscriptions[subsId]; !ok {
+		return false
+	}
+	delete(context.SubscriptionDataSubscriptions, subsId)
+	return true
+}
+
+func (context *UDRContext) SubscriptionDataSubscriptionsSnapshot() []*SubscriptionDataSubscriptionRecord {
+	context.mtx.RLock()
+	defer context.mtx.RUnlock()
+	snapshot := make([]*SubscriptionDataSubscriptionRecord, 0, len(context.SubscriptionDataSubscriptions))
+	for _, record := range context.SubscriptionDataSubscriptions {
+		snapshot = append(snapshot, record)
+	}
+	return snapshot
+}
+
+// CreatePolicyDataSubscription is the policy-data counterpart of
+// CreateSubscriptionDataSubscription.
+func (context *UDRContext) CreatePolicyDataSubscription(
+	subscription *models.Udr_DR_PolicyDataSubscription,
+	callbackTarget SubscriptionCallbackTarget,
+) string {
+	context.mtx.Lock()
+	defer context.mtx.Unlock()
+	newSubscriptionID := strconv.Itoa(context.PolicyDataSubscriptionIDGenerator)
+	context.PolicyDataSubscriptions[newSubscriptionID] = &PolicyDataSubscriptionRecord{
+		Subscription:   subscription,
+		CallbackTarget: callbackTarget,
+	}
+	context.PolicyDataSubscriptionIDGenerator++
+	return newSubscriptionID
+}
+
+// PutPolicyDataSubscription replaces the record instead of writing through it,
+// so a snapshot taken before the PUT never observes a half-updated record.
+func (context *UDRContext) PutPolicyDataSubscription(
+	subsId string, subscription *models.Udr_DR_PolicyDataSubscription,
+) bool {
+	context.mtx.Lock()
+	defer context.mtx.Unlock()
+	record, ok := context.PolicyDataSubscriptions[subsId]
+	if !ok || record == nil {
+		return false
+	}
+	context.PolicyDataSubscriptions[subsId] = &PolicyDataSubscriptionRecord{
+		Subscription:   subscription,
+		CallbackTarget: record.CallbackTarget,
+	}
+	return true
+}
+
+func (context *UDRContext) DeletePolicyDataSubscription(subsId string) bool {
+	context.mtx.Lock()
+	defer context.mtx.Unlock()
+	if _, ok := context.PolicyDataSubscriptions[subsId]; !ok {
+		return false
+	}
+	delete(context.PolicyDataSubscriptions, subsId)
+	return true
+}
+
+func (context *UDRContext) PolicyDataSubscriptionsSnapshot() []*PolicyDataSubscriptionRecord {
+	context.mtx.RLock()
+	defer context.mtx.RUnlock()
+	snapshot := make([]*PolicyDataSubscriptionRecord, 0, len(context.PolicyDataSubscriptions))
+	for _, record := range context.PolicyDataSubscriptions {
+		snapshot = append(snapshot, record)
+	}
+	return snapshot
+}
+
+func (c *UDRContext) GetTokenCtx(serviceName models.Nrf_NFMgmt_ServiceName, targetNF models.Nrf_NFMgmt_NFType) (
+	context.Context, *models.ProblemDetails, error,
+) {
+	if !c.OAuth2Required {
+		return context.TODO(), nil, nil
+	}
+	return oauth.GetTokenCtx(models.Nrf_NFMgmt_NFType_UDR, targetNF,
+		c.NfId, c.NrfUri, string(serviceName))
+}
+
+func (c *UDRContext) OAuth2Enabled() bool {
+	return c.OAuth2Required
+}
+
+func (c *UDRContext) AuthorizationCheck(token string, serviceName models.Nrf_NFMgmt_ServiceName) error {
+	if !c.OAuth2Required {
+		logger.UtilLog.Debugf("UDRContext::AuthorizationCheck: OAuth2 not required\n")
+		return nil
+	}
+
+	logger.UtilLog.Debugf("UDRContext::AuthorizationCheck: token[%s] serviceName[%s]\n", token, serviceName)
+	return oauth.VerifyOAuth(token, string(serviceName), c.NrfCertPem)
+}

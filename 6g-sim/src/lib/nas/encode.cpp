@@ -1,0 +1,464 @@
+//
+// This file is a part of UERANSIM project.
+// Copyright (c) 2027 ALİ GÜNGÖR.
+//
+// https://github.com/aligungr/UERANSIM/
+// See README, LICENSE, and CONTRIBUTING files for licensing details.
+//
+
+#include "encode.hpp"
+
+#include <algorithm>
+#include <memory>
+#include <stdexcept>
+
+namespace nas
+{
+
+template <typename T>
+static void EncodeViaBuilder(T &msg, OctetString &stream)
+{
+    NasMessageBuilder builder{};
+    msg.onBuild(builder);
+
+    for (auto &f : builder.mandatoryEncoders)
+        f(stream);
+    for (auto &f : builder.optionalEncoders)
+        f(stream);
+}
+
+static void EncodeMm(PlainMmMessage &msg, OctetString &stream)
+{
+    stream.appendOctet(static_cast<int>(msg.messageType));
+
+    switch (msg.messageType)
+    {
+    case EMessageType::REGISTRATION_REQUEST:
+        EncodeViaBuilder((RegistrationRequest &)msg, stream);
+        break;
+    case EMessageType::REGISTRATION_ACCEPT:
+        EncodeViaBuilder((RegistrationAccept &)msg, stream);
+        break;
+    case EMessageType::REGISTRATION_COMPLETE:
+        EncodeViaBuilder((RegistrationComplete &)msg, stream);
+        break;
+    case EMessageType::REGISTRATION_REJECT:
+        EncodeViaBuilder((RegistrationReject &)msg, stream);
+        break;
+    case EMessageType::DEREGISTRATION_REQUEST_UE_ORIGINATING:
+        EncodeViaBuilder((DeRegistrationRequestUeOriginating &)msg, stream);
+        break;
+    case EMessageType::DEREGISTRATION_ACCEPT_UE_ORIGINATING:
+        EncodeViaBuilder((DeRegistrationAcceptUeOriginating &)msg, stream);
+        break;
+    case EMessageType::DEREGISTRATION_REQUEST_UE_TERMINATED:
+        EncodeViaBuilder((DeRegistrationRequestUeTerminated &)msg, stream);
+        break;
+    case EMessageType::DEREGISTRATION_ACCEPT_UE_TERMINATED:
+        EncodeViaBuilder((DeRegistrationAcceptUeTerminated &)msg, stream);
+        break;
+    case EMessageType::SERVICE_REQUEST:
+        EncodeViaBuilder((ServiceRequest &)msg, stream);
+        break;
+    case EMessageType::SERVICE_REJECT:
+        EncodeViaBuilder((ServiceReject &)msg, stream);
+        break;
+    case EMessageType::SERVICE_ACCEPT:
+        EncodeViaBuilder((ServiceAccept &)msg, stream);
+        break;
+    case EMessageType::CONFIGURATION_UPDATE_COMMAND:
+        EncodeViaBuilder((ConfigurationUpdateCommand &)msg, stream);
+        break;
+    case EMessageType::CONFIGURATION_UPDATE_COMPLETE:
+        EncodeViaBuilder((ConfigurationUpdateComplete &)msg, stream);
+        break;
+    case EMessageType::AUTHENTICATION_REQUEST:
+        EncodeViaBuilder((AuthenticationRequest &)msg, stream);
+        break;
+    case EMessageType::AUTHENTICATION_RESPONSE:
+        EncodeViaBuilder((AuthenticationResponse &)msg, stream);
+        break;
+    case EMessageType::AUTHENTICATION_REJECT:
+        EncodeViaBuilder((AuthenticationReject &)msg, stream);
+        break;
+    case EMessageType::AUTHENTICATION_FAILURE:
+        EncodeViaBuilder((AuthenticationFailure &)msg, stream);
+        break;
+    case EMessageType::AUTHENTICATION_RESULT:
+        EncodeViaBuilder((AuthenticationResult &)msg, stream);
+        break;
+    case EMessageType::IDENTITY_REQUEST:
+        EncodeViaBuilder((IdentityRequest &)msg, stream);
+        break;
+    case EMessageType::IDENTITY_RESPONSE:
+        EncodeViaBuilder((IdentityResponse &)msg, stream);
+        break;
+    case EMessageType::SECURITY_MODE_COMMAND:
+        EncodeViaBuilder((SecurityModeCommand &)msg, stream);
+        break;
+    case EMessageType::SECURITY_MODE_COMPLETE:
+        EncodeViaBuilder((SecurityModeComplete &)msg, stream);
+        break;
+    case EMessageType::SECURITY_MODE_REJECT:
+        EncodeViaBuilder((SecurityModeReject &)msg, stream);
+        break;
+    case EMessageType::FIVEG_MM_STATUS:
+        EncodeViaBuilder((FiveGMmStatus &)msg, stream);
+        break;
+    case EMessageType::NOTIFICATION:
+        EncodeViaBuilder((Notification &)msg, stream);
+        break;
+    case EMessageType::NOTIFICATION_RESPONSE:
+        EncodeViaBuilder((NotificationResponse &)msg, stream);
+        break;
+    case EMessageType::UL_NAS_TRANSPORT:
+        EncodeViaBuilder((UlNasTransport &)msg, stream);
+        break;
+    case EMessageType::DL_NAS_TRANSPORT:
+        EncodeViaBuilder((DlNasTransport &)msg, stream);
+        break;
+    default:
+        throw std::runtime_error("invalid NAS message type");
+    }
+}
+
+static void EncodeSecured(SecuredMmMessage &msg, OctetString &stream)
+{
+    stream.appendOctet4(msg.messageAuthenticationCode);
+    stream.appendOctet(msg.sequenceNumber);
+    stream.append(msg.plainNasMessage);
+}
+
+static void EncodeSm(SmMessage &msg, OctetString &stream)
+{
+    stream.appendOctet(msg.pduSessionId);
+    stream.appendOctet(msg.pti);
+    stream.appendOctet(static_cast<int>(msg.messageType));
+
+    switch (msg.messageType)
+    {
+    case EMessageType::PDU_SESSION_ESTABLISHMENT_REQUEST:
+        EncodeViaBuilder((PduSessionEstablishmentRequest &)msg, stream);
+        break;
+    case EMessageType::PDU_SESSION_ESTABLISHMENT_ACCEPT:
+        EncodeViaBuilder((PduSessionEstablishmentAccept &)msg, stream);
+        break;
+    case EMessageType::PDU_SESSION_ESTABLISHMENT_REJECT:
+        EncodeViaBuilder((PduSessionEstablishmentReject &)msg, stream);
+        break;
+    case EMessageType::PDU_SESSION_AUTHENTICATION_COMMAND:
+        EncodeViaBuilder((PduSessionAuthenticationCommand &)msg, stream);
+        break;
+    case EMessageType::PDU_SESSION_AUTHENTICATION_COMPLETE:
+        EncodeViaBuilder((PduSessionAuthenticationComplete &)msg, stream);
+        break;
+    case EMessageType::PDU_SESSION_AUTHENTICATION_RESULT:
+        EncodeViaBuilder((PduSessionAuthenticationResult &)msg, stream);
+        break;
+    case EMessageType::PDU_SESSION_MODIFICATION_REQUEST:
+        EncodeViaBuilder((PduSessionModificationRequest &)msg, stream);
+        break;
+    case EMessageType::PDU_SESSION_MODIFICATION_REJECT:
+        EncodeViaBuilder((PduSessionModificationReject &)msg, stream);
+        break;
+    case EMessageType::PDU_SESSION_MODIFICATION_COMMAND:
+        EncodeViaBuilder((PduSessionModificationCommand &)msg, stream);
+        break;
+    case EMessageType::PDU_SESSION_MODIFICATION_COMPLETE:
+        EncodeViaBuilder((PduSessionModificationComplete &)msg, stream);
+        break;
+    case EMessageType::PDU_SESSION_MODIFICATION_COMMAND_REJECT:
+        EncodeViaBuilder((PduSessionModificationCommandReject &)msg, stream);
+        break;
+    case EMessageType::PDU_SESSION_RELEASE_REQUEST:
+        EncodeViaBuilder((PduSessionReleaseRequest &)msg, stream);
+        break;
+    case EMessageType::PDU_SESSION_RELEASE_REJECT:
+        EncodeViaBuilder((PduSessionReleaseReject &)msg, stream);
+        break;
+    case EMessageType::PDU_SESSION_RELEASE_COMMAND:
+        EncodeViaBuilder((PduSessionReleaseCommand &)msg, stream);
+        break;
+    case EMessageType::PDU_SESSION_RELEASE_COMPLETE:
+        EncodeViaBuilder((PduSessionReleaseComplete &)msg, stream);
+        break;
+    case EMessageType::FIVEG_SM_STATUS:
+        EncodeViaBuilder((FiveGSmStatus &)msg, stream);
+        break;
+    default:
+        throw std::runtime_error("invalid NAS message type");
+    }
+}
+
+void EncodeNasMessage(const NasMessage &msg, OctetString &stream)
+{
+    stream.appendOctet(static_cast<int>(msg.epd));
+    if (msg.epd == EExtendedProtocolDiscriminator::MOBILITY_MANAGEMENT_MESSAGES)
+    {
+        auto &mm = (MmMessage &)msg;
+        stream.appendOctet(static_cast<int>(mm.sht));
+
+        if (mm.sht == ESecurityHeaderType::NOT_PROTECTED)
+            EncodeMm((PlainMmMessage &)mm, stream);
+        else
+            EncodeSecured((SecuredMmMessage &)mm, stream);
+    }
+    else
+        EncodeSm((SmMessage &)msg, stream);
+}
+
+static SecuredMmMessage *DecodeSecuredMmMessage(const OctetView &stream, ESecurityHeaderType sht)
+{
+    auto p = std::make_unique<SecuredMmMessage>();
+    p->messageAuthenticationCode = stream.read4();
+    p->sequenceNumber = stream.read();
+    p->plainNasMessage = stream.readOctetString();
+    return p.release();
+}
+
+// TS 24.501 §7.6.1: an IE the message does not define is ignored, unless it is encoded as comprehension required. Its
+// format follows from the IEI alone (TS 24.007 §11.2.4): with bit 8 set it is a type 1 or type 2 IE of a single octet,
+// with 0000 in bits 8 to 5 it is comprehension required, with 0111 a TLV-E IE, and otherwise a TLV IE.
+static void SkipUnknownIe(const OctetView &stream)
+{
+    int iei = stream.readI();
+    if (iei & 0x80)
+        return;
+    if ((iei & 0xF0) == 0x00)
+        throw std::runtime_error("NAS message contains an unknown comprehension required IE");
+
+    size_t lengthSize = (iei & 0xF0) == 0x70 ? 2 : 1;
+    if (stream.remainingSize() < lengthSize)
+    {
+        stream.subView(stream.remainingSize());
+        return;
+    }
+    size_t length = lengthSize == 1 ? stream.readI() : stream.read2US();
+    // An IE that claims more octets than are left is the last one in the message.
+    stream.subView(std::min(length, stream.remainingSize()));
+}
+
+template <typename T>
+static T *DecodeViaBuilder(const OctetView &stream)
+{
+    // Owned until it is complete, so that a decoder that throws does not leak it.
+    auto p = std::make_unique<T>();
+
+    NasMessageBuilder builder{};
+    p->onBuild(builder);
+
+    for (auto &f : builder.mandatoryDecoders)
+        f(stream);
+
+    while (stream.hasNext())
+    {
+        int iei = stream.peekI();
+        // Type 1 IEs are identified by the upper half of their octet alone, and those are the only keys below 0x10.
+        if (iei >= 0x10 && builder.optionalDecoders.count(iei))
+            builder.optionalDecoders[iei](stream);
+        else if ((iei & 0x80) && builder.optionalDecoders.count((iei >> 4) & 0xF))
+            builder.optionalDecoders[(iei >> 4) & 0xF](stream);
+        else
+            SkipUnknownIe(stream);
+    }
+
+    return p.release();
+}
+
+static PlainMmMessage *DecodePlainMmMessage(const OctetView &stream, EMessageType messageType)
+{
+    switch (messageType)
+    {
+    case EMessageType::REGISTRATION_REQUEST:
+        return DecodeViaBuilder<RegistrationRequest>(stream);
+    case EMessageType::REGISTRATION_ACCEPT:
+        return DecodeViaBuilder<RegistrationAccept>(stream);
+    case EMessageType::REGISTRATION_COMPLETE:
+        return DecodeViaBuilder<RegistrationComplete>(stream);
+    case EMessageType::REGISTRATION_REJECT:
+        return DecodeViaBuilder<RegistrationReject>(stream);
+    case EMessageType::DEREGISTRATION_REQUEST_UE_ORIGINATING:
+        return DecodeViaBuilder<DeRegistrationRequestUeOriginating>(stream);
+    case EMessageType::DEREGISTRATION_ACCEPT_UE_ORIGINATING:
+        return DecodeViaBuilder<DeRegistrationAcceptUeOriginating>(stream);
+    case EMessageType::DEREGISTRATION_REQUEST_UE_TERMINATED:
+        return DecodeViaBuilder<DeRegistrationRequestUeTerminated>(stream);
+    case EMessageType::DEREGISTRATION_ACCEPT_UE_TERMINATED:
+        return DecodeViaBuilder<DeRegistrationAcceptUeTerminated>(stream);
+    case EMessageType::SERVICE_REQUEST:
+        return DecodeViaBuilder<ServiceRequest>(stream);
+    case EMessageType::SERVICE_REJECT:
+        return DecodeViaBuilder<ServiceReject>(stream);
+    case EMessageType::SERVICE_ACCEPT:
+        return DecodeViaBuilder<ServiceAccept>(stream);
+    case EMessageType::CONFIGURATION_UPDATE_COMMAND:
+        return DecodeViaBuilder<ConfigurationUpdateCommand>(stream);
+    case EMessageType::CONFIGURATION_UPDATE_COMPLETE:
+        return DecodeViaBuilder<ConfigurationUpdateComplete>(stream);
+    case EMessageType::AUTHENTICATION_REQUEST:
+        return DecodeViaBuilder<AuthenticationRequest>(stream);
+    case EMessageType::AUTHENTICATION_RESPONSE:
+        return DecodeViaBuilder<AuthenticationResponse>(stream);
+    case EMessageType::AUTHENTICATION_REJECT:
+        return DecodeViaBuilder<AuthenticationReject>(stream);
+    case EMessageType::AUTHENTICATION_FAILURE:
+        return DecodeViaBuilder<AuthenticationFailure>(stream);
+    case EMessageType::AUTHENTICATION_RESULT:
+        return DecodeViaBuilder<AuthenticationResult>(stream);
+    case EMessageType::IDENTITY_REQUEST:
+        return DecodeViaBuilder<IdentityRequest>(stream);
+    case EMessageType::IDENTITY_RESPONSE:
+        return DecodeViaBuilder<IdentityResponse>(stream);
+    case EMessageType::SECURITY_MODE_COMMAND:
+        return DecodeViaBuilder<SecurityModeCommand>(stream);
+    case EMessageType::SECURITY_MODE_COMPLETE:
+        return DecodeViaBuilder<SecurityModeComplete>(stream);
+    case EMessageType::SECURITY_MODE_REJECT:
+        return DecodeViaBuilder<SecurityModeReject>(stream);
+    case EMessageType::FIVEG_MM_STATUS:
+        return DecodeViaBuilder<FiveGMmStatus>(stream);
+    case EMessageType::NOTIFICATION:
+        return DecodeViaBuilder<Notification>(stream);
+    case EMessageType::NOTIFICATION_RESPONSE:
+        return DecodeViaBuilder<NotificationResponse>(stream);
+    case EMessageType::UL_NAS_TRANSPORT:
+        return DecodeViaBuilder<UlNasTransport>(stream);
+    case EMessageType::DL_NAS_TRANSPORT:
+        return DecodeViaBuilder<DlNasTransport>(stream);
+    default:
+        return nullptr;
+    }
+}
+
+static SmMessage *DecodeSmMessage(const OctetView &stream, EMessageType messageType)
+{
+    switch (messageType)
+    {
+    case EMessageType::PDU_SESSION_ESTABLISHMENT_REQUEST:
+        return DecodeViaBuilder<PduSessionEstablishmentRequest>(stream);
+    case EMessageType::PDU_SESSION_ESTABLISHMENT_ACCEPT:
+        return DecodeViaBuilder<PduSessionEstablishmentAccept>(stream);
+    case EMessageType::PDU_SESSION_ESTABLISHMENT_REJECT:
+        return DecodeViaBuilder<PduSessionEstablishmentReject>(stream);
+    case EMessageType::PDU_SESSION_AUTHENTICATION_COMMAND:
+        return DecodeViaBuilder<PduSessionAuthenticationCommand>(stream);
+    case EMessageType::PDU_SESSION_AUTHENTICATION_COMPLETE:
+        return DecodeViaBuilder<PduSessionAuthenticationComplete>(stream);
+    case EMessageType::PDU_SESSION_AUTHENTICATION_RESULT:
+        return DecodeViaBuilder<PduSessionAuthenticationResult>(stream);
+    case EMessageType::PDU_SESSION_MODIFICATION_REQUEST:
+        return DecodeViaBuilder<PduSessionModificationRequest>(stream);
+    case EMessageType::PDU_SESSION_MODIFICATION_REJECT:
+        return DecodeViaBuilder<PduSessionModificationReject>(stream);
+    case EMessageType::PDU_SESSION_MODIFICATION_COMMAND:
+        return DecodeViaBuilder<PduSessionModificationCommand>(stream);
+    case EMessageType::PDU_SESSION_MODIFICATION_COMPLETE:
+        return DecodeViaBuilder<PduSessionModificationComplete>(stream);
+    case EMessageType::PDU_SESSION_MODIFICATION_COMMAND_REJECT:
+        return DecodeViaBuilder<PduSessionModificationCommandReject>(stream);
+    case EMessageType::PDU_SESSION_RELEASE_REQUEST:
+        return DecodeViaBuilder<PduSessionReleaseRequest>(stream);
+    case EMessageType::PDU_SESSION_RELEASE_REJECT:
+        return DecodeViaBuilder<PduSessionReleaseReject>(stream);
+    case EMessageType::PDU_SESSION_RELEASE_COMMAND:
+        return DecodeViaBuilder<PduSessionReleaseCommand>(stream);
+    case EMessageType::PDU_SESSION_RELEASE_COMPLETE:
+        return DecodeViaBuilder<PduSessionReleaseComplete>(stream);
+    case EMessageType::FIVEG_SM_STATUS:
+        return DecodeViaBuilder<FiveGSmStatus>(stream);
+    default:
+        return nullptr;
+    }
+}
+
+NasDecodeError::NasDecodeError(EDecodeFailure failure, const std::string &what)
+    : std::runtime_error(what), failure(failure)
+{
+}
+
+[[noreturn]] static void Fail(EDecodeFailure failure, const NasDecodeError &header, const std::string &what)
+{
+    NasDecodeError error{failure, what};
+    error.epd = header.epd;
+    error.messageType = header.messageType;
+    error.pduSessionId = header.pduSessionId;
+    error.pti = header.pti;
+    throw error;
+}
+
+// The body of a message whose header decoded. An optional IE that does not decode counts as absent (§7.7.1), so what
+// fails here is the message type or a mandatory IE.
+template <typename T>
+static std::unique_ptr<T> DecodeBody(T *(*decode)(const OctetView &, EMessageType), const OctetView &stream,
+                                     const NasDecodeError &header)
+{
+    std::unique_ptr<T> message;
+    try
+    {
+        message.reset(decode(stream, header.messageType));
+    }
+    catch (const std::exception &e)
+    {
+        Fail(EDecodeFailure::INVALID_MANDATORY_INFORMATION, header, e.what());
+    }
+    if (message == nullptr)
+        Fail(EDecodeFailure::UNKNOWN_MESSAGE_TYPE, header, "NAS message type not defined");
+    return message;
+}
+
+std::unique_ptr<NasMessage> DecodeNasMessage(const OctetView &stream)
+{
+    // The header of the message as it decodes, for the error if the rest does not.
+    NasDecodeError header{EDecodeFailure::TOO_SHORT, ""};
+
+    auto requireOctets = [&stream, &header](size_t count) {
+        if (stream.remainingSize() < count)
+            Fail(EDecodeFailure::TOO_SHORT, header, "NAS message too short");
+    };
+
+    requireOctets(1);
+    header.epd = static_cast<EExtendedProtocolDiscriminator>(stream.readI());
+
+    if (header.epd == EExtendedProtocolDiscriminator::MOBILITY_MANAGEMENT_MESSAGES)
+    {
+        requireOctets(1);
+        auto sht = static_cast<ESecurityHeaderType>(stream.readI());
+        if (sht != ESecurityHeaderType::NOT_PROTECTED)
+        {
+            // The message authentication code and the sequence number.
+            requireOctets(5);
+            SecuredMmMessage *p = DecodeSecuredMmMessage(stream, sht);
+            p->epd = header.epd;
+            p->sht = sht;
+            return std::unique_ptr<NasMessage>(p);
+        }
+
+        requireOctets(1);
+        header.messageType = static_cast<EMessageType>(stream.readI());
+
+        auto p = DecodeBody(DecodePlainMmMessage, stream, header);
+        p->epd = header.epd;
+        p->sht = sht;
+        p->messageType = header.messageType;
+        return p;
+    }
+
+    if (header.epd == EExtendedProtocolDiscriminator::SESSION_MANAGEMENT_MESSAGES)
+    {
+        requireOctets(3);
+        header.pduSessionId = stream.readI();
+        header.pti = stream.readI();
+        header.messageType = static_cast<EMessageType>(stream.readI());
+
+        auto p = DecodeBody(DecodeSmMessage, stream, header);
+        p->epd = header.epd;
+        p->pduSessionId = header.pduSessionId;
+        p->pti = header.pti;
+        p->messageType = header.messageType;
+        return p;
+    }
+
+    Fail(EDecodeFailure::UNKNOWN_PROTOCOL, header, "NAS message of an unknown protocol");
+}
+
+} // namespace nas

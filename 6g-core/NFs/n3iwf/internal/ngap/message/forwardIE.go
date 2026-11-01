@@ -1,0 +1,76 @@
+package message
+
+import (
+	"github.com/free5gc/ngap/aper"
+	ngapType "github.com/free5gc/ngap/ie"
+)
+
+func AppendPDUSessionResourceSetupListCxtRes(
+	list *ngapType.PDUSessionResourceSetupListCxtRes, pduSessionID int64, transfer []byte,
+) {
+	item := ngapType.PDUSessionResourceSetupItemCxtRes{}
+	item.PDUSessionID = &ngapType.PDUSessionID{Value: pduSessionID}
+	value := aper.OctetString(transfer)
+	item.PDUSessionResourceSetupResponseTransfer = &value
+	list.List = append(list.List, item)
+}
+
+func AppendPDUSessionResourceFailedToSetupListCxtRes(
+	list *ngapType.PDUSessionResourceFailedToSetupListCxtRes, pduSessionID int64, transfer []byte,
+) {
+	item := ngapType.PDUSessionResourceFailedToSetupItemCxtRes{}
+	item.PDUSessionID = &ngapType.PDUSessionID{Value: pduSessionID}
+	value := aper.OctetString(transfer)
+	item.PDUSessionResourceSetupUnsuccessfulTransfer = &value
+	list.List = append(list.List, item)
+}
+
+func AppendPDUSessionResourceFailedToSetupListCxtfail(
+	list *ngapType.PDUSessionResourceFailedToSetupListCxtFail, pduSessionID int64, transfer []byte,
+) {
+	item := ngapType.PDUSessionResourceFailedToSetupItemCxtFail{}
+	item.PDUSessionID = &ngapType.PDUSessionID{Value: pduSessionID}
+	value := aper.OctetString(transfer)
+	item.PDUSessionResourceSetupUnsuccessfulTransfer = &value
+	list.List = append(list.List, item)
+}
+
+func AppendPDUSessionResourceSetupListSURes(
+	list *ngapType.PDUSessionResourceSetupListSURes, pduSessionID int64, transfer []byte,
+) {
+	item := ngapType.PDUSessionResourceSetupItemSURes{}
+	item.PDUSessionID = &ngapType.PDUSessionID{Value: pduSessionID}
+	value := aper.OctetString(transfer)
+	item.PDUSessionResourceSetupResponseTransfer = &value
+	list.List = append(list.List, item)
+}
+
+func AppendPDUSessionResourceFailedToSetupListSURes(
+	list *ngapType.PDUSessionResourceFailedToSetupListSURes, pduSessionID int64, transfer []byte,
+) {
+	item := ngapType.PDUSessionResourceFailedToSetupItemSURes{}
+	item.PDUSessionID = &ngapType.PDUSessionID{Value: pduSessionID}
+	value := aper.OctetString(transfer)
+	item.PDUSessionResourceSetupUnsuccessfulTransfer = &value
+	list.List = append(list.List, item)
+}
+
+func AppendPDUSessionResourceModifyListModRes(
+	list *ngapType.PDUSessionResourceModifyListModRes, pduSessionID int64, transfer []byte,
+) {
+	item := ngapType.PDUSessionResourceModifyItemModRes{}
+	item.PDUSessionID = &ngapType.PDUSessionID{Value: pduSessionID}
+	value := aper.OctetString(transfer)
+	item.PDUSessionResourceModifyResponseTransfer = &value
+	list.List = append(list.List, item)
+}
+
+func AppendPDUSessionResourceFailedToModifyListModRes(
+	list *ngapType.PDUSessionResourceFailedToModifyListModRes, pduSessionID int64, transfer []byte,
+) {
+	item := ngapType.PDUSessionResourceFailedToModifyItemModRes{}
+	item.PDUSessionID = &ngapType.PDUSessionID{Value: pduSessionID}
+	value := aper.OctetString(transfer)
+	item.PDUSessionResourceModifyUnsuccessfulTransfer = &value
+	list.List = append(list.List, item)
+}

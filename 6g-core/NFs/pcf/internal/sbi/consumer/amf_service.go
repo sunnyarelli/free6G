@@ -1,0 +1,93 @@
+package consumer
+
+import (
+	"fmt"
+	"strings"
+	"sync"
+
+	"github.com/free5gc/openapi"
+	"github.com/free5gc/openapi/amf/Comm"
+	"github.com/free5gc/openapi/models"
+	pcf_context "github.com/free5gc/pcf/internal/context"
+	"github.com/free5gc/pcf/internal/logger"
+	"github.com/free5gc/pcf/pkg/factory"
+	sbi_metrics "github.com/free5gc/util/metrics/sbi"
+)
+
+type namfService struct {
+	consumer *Consumer
+
+	nfComMu sync.RWMutex
+
+	nfComClients map[string]*Comm.APIClient
+}
+
+func (s *namfService) getNFCommunicationClient(uri string) *Comm.APIClient {
+	if uri == "" {
+		return nil
+	}
+	s.nfComMu.RLock()
+	client, ok := s.nfComClients[uri]
+	if ok {
+		defer s.nfComMu.RUnlock()
+		return client
+	}
+
+	configuration := Comm.NewConfiguration()
+	configuration.SetBasePath(uri)
+	configuration.SetMetrics(sbi_metrics.SbiMetricHook)
+	client = Comm.NewAPIClient(configuration)
+
+	s.nfComMu.RUnlock()
+	s.nfComMu.Lock()
+	defer s.nfComMu.Unlock()
+	s.nfComClients[uri] = client
+	return client
+}
+
+func (s *namfService) AmfStatusChangeSubscribe(amfUri string, guamiList []models.Guami) (
+	problemDetails *models.ProblemDetails, err error,
+) {
+	logger.ConsumerLog.Debugf("PCF Subscribe to AMF status[%+v]", amfUri)
+	pcfContext := s.consumer.pcf.Context()
+
+	// Set client and set url
+	client := s.getNFCommunicationClient(amfUri)
+
+	subscriptionData := models.Amf_Comm_SubscriptionData{
+		AmfStatusUri: fmt.Sprintf("%s"+factory.PcfCallbackResUriPrefix+"/amfstatus", pcfContext.GetIPv4Uri()),
+		GuamiList:    guamiList,
+	}
+	amfStausChangeRequest := &Comm.AMFStatusChangeSubscribeRequest{
+		RequestBody: &subscriptionData,
+	}
+	ctx, pd, err := pcfContext.GetTokenCtx(models.Nrf_NFMgmt_ServiceName_NAMF_COMM, models.Nrf_NFMgmt_NFType_AMF)
+	if err != nil {
+		return pd, err
+	}
+	res, localErr := client.SubscriptionsCollectionCollectionApi.AMFStatusChangeSubscribe(
+		ctx, amfStausChangeRequest)
+
+	if localErr == nil {
+		locationHeader := res.Location
+		logger.ConsumerLog.Debugf("location header: %+v", locationHeader)
+
+		subscriptionID := locationHeader[strings.LastIndex(locationHeader, "/")+1:]
+		amfStatusSubsData := pcf_context.AMFStatusSubscriptionData{
+			AmfUri:       amfUri,
+			AmfStatusUri: res.Amf_Comm_SubscriptionData.AmfStatusUri,
+			GuamiList:    res.Amf_Comm_SubscriptionData.GuamiList,
+		}
+		pcfContext.NewAmfStatusSubscription(subscriptionID, amfStatusSubsData)
+	}
+
+	if genericErr, ok := localErr.(openapi.GenericOpenAPIError); ok {
+		if problemDetails, ok := genericErr.Model().(models.ProblemDetails); ok {
+			return &problemDetails, nil
+		}
+
+		logger.ConsumerLog.Errorf("openapi error: %+v", localErr)
+		return nil, localErr
+	}
+	return nil, localErr
+}

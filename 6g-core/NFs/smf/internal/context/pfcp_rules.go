@@ -1,0 +1,361 @@
+package context
+
+import (
+	"strings"
+	"time"
+
+	"github.com/free5gc/smf/internal/logger"
+	"github.com/free5gc/smf/internal/pfcp/pfcptype"
+)
+
+const (
+	RULE_INITIAL RuleState = 0
+	RULE_CREATE  RuleState = 1
+	RULE_UPDATE  RuleState = 2
+	RULE_REMOVE  RuleState = 3
+	RULE_QUERY   RuleState = 4
+)
+
+type RuleState uint8
+
+// Packet Detection Rule. Table 7.5.2.2-1
+type PDR struct {
+	PDRID uint16
+	// Disabled PDRs reserve a tunnel endpoint but have no applicable direction.
+	// They must never be installed as a filterless, catch-all PDR.
+	Disabled bool
+
+	Precedence         uint32
+	PDI                PDI
+	OuterHeaderRemoval *pfcptype.OuterHeaderRemoval
+
+	FAR *FAR
+	URR []*URR
+	QER []*QER
+
+	State RuleState
+}
+
+const (
+	MeasureInfoMNOP     = 0x10 // Measure Num of Pkts (MNOP)
+	MeasureInfoMBQE     = 0x1  // Measure Before Qos Enforce(MQBE)
+	MesureMethodVol     = "vol"
+	MesureMethodTime    = "time"
+	MeasurePeriodReport = 0x0100 // 0x10: PERIO
+)
+
+// Usage Report Rule
+type URR struct {
+	URRID                  uint32
+	MeasureMethod          string // vol or time
+	ReportingTrigger       pfcptype.ReportingTrigger
+	MeasurementPeriod      time.Duration
+	QuotaValidityTime      time.Time
+	MeasurementInformation pfcptype.MeasurementInformation
+	VolumeThreshold        uint64
+	VolumeQuota            uint64
+}
+
+type UrrEntry struct {
+	Rule               *URR      // rule content (RG, Threshold...)
+	State              RuleState // deployment state (INITIAL, CREATE...)
+	RefCount           int       // number of PDRs referencing this URR
+	PDRIDs             []uint16  // IDs of PDRs currently referencing this URR
+	stateBeforeRemoval RuleState
+}
+
+type UrrOpt func(urr *URR)
+
+func NewMeasureInformation(isMeasurePkt, isMeasureBeforeQos bool) UrrOpt {
+	return func(urr *URR) {
+		urr.MeasurementInformation = MeasureInformation(isMeasurePkt, isMeasureBeforeQos)
+	}
+}
+
+func NewMeasurementPeriod(period time.Duration) UrrOpt {
+	return func(urr *URR) {
+		urr.ReportingTrigger.SetPERIO()
+		urr.MeasurementPeriod = period
+	}
+}
+
+func NewVolumeThreshold(threshold uint64) UrrOpt {
+	return func(urr *URR) {
+		urr.ReportingTrigger.SetVOLTH()
+		urr.VolumeThreshold = threshold
+	}
+}
+
+func NewVolumeQuota(quota uint64) UrrOpt {
+	return func(urr *URR) {
+		urr.ReportingTrigger.SetVOLQU()
+		urr.VolumeQuota = quota
+	}
+}
+
+func SetStartOfSDFTrigger() UrrOpt {
+	return func(urr *URR) {
+		urr.ReportingTrigger.SetSTART()
+	}
+}
+
+func MeasureInformation(isMeasurePkt, isMeasureBeforeQos bool) pfcptype.MeasurementInformation {
+	var flags uint8
+	if isMeasureBeforeQos {
+		flags |= pfcptype.MeasureInfoMBQE
+	}
+	if isMeasurePkt {
+		flags |= pfcptype.MeasureInfoMNOP
+	}
+	return pfcptype.MeasurementInformation{Flags: flags}
+}
+
+func (c *SMContext) RegisterUrr(upfId string, urr *URR) *URR {
+	c.UrrTableMutex.Lock()
+	defer c.UrrTableMutex.Unlock()
+	if c.UrrTable[upfId] == nil {
+		c.UrrTable[upfId] = make(map[uint32]*UrrEntry)
+	}
+	if entry, exists := c.UrrTable[upfId][urr.URRID]; exists {
+		return entry.Rule // already registered, return existing rule
+	}
+
+	c.UrrTable[upfId][urr.URRID] = &UrrEntry{
+		Rule:  urr,
+		State: RULE_INITIAL,
+	}
+	return urr
+}
+
+func (c *SMContext) SetUrrState(upfId string, urrID uint32, state RuleState) {
+	c.UrrTableMutex.Lock()
+	defer c.UrrTableMutex.Unlock()
+
+	if c.UrrTable[upfId] == nil {
+		logger.PduSessLog.Warnf("SetUrrState: UPF[%s] not in UrrTable", upfId)
+		return
+	}
+	if entry, ok := c.UrrTable[upfId][urrID]; ok {
+		entry.State = state
+	} else {
+		logger.PduSessLog.Warnf("SetUrrState: URR[%d] not found for UPF[%s]", urrID, upfId)
+	}
+}
+
+func (c *SMContext) GetUrrRule(upfId string, urrID uint32) *URR {
+	c.UrrTableMutex.RLock()
+	defer c.UrrTableMutex.RUnlock()
+	if entries, ok := c.UrrTable[upfId]; ok {
+		if entry, ok2 := entries[urrID]; ok2 {
+			return entry.Rule
+		}
+	}
+	return nil
+}
+
+func (c *SMContext) GetUrrState(upfId string, urrID uint32) RuleState {
+	c.UrrTableMutex.RLock()
+	defer c.UrrTableMutex.RUnlock()
+	if entries, ok := c.UrrTable[upfId]; ok {
+		if entry, ok2 := entries[urrID]; ok2 {
+			return entry.State
+		}
+	}
+	return RULE_INITIAL // default state if not found
+}
+
+// PDRAppendURRs appends URRs to a PDR and increments the ref count in UrrTable.
+// Must be used instead of pdr.AppendURRs() whenever smContext is available.
+func (c *SMContext) PDRAppendURRs(upfId string, pdr *PDR, urrs []*URR) {
+	c.UrrTableMutex.Lock()
+	defer c.UrrTableMutex.Unlock()
+	for _, urr := range urrs {
+		pdr.URR = append(pdr.URR, urr)
+		entry := c.UrrTable[upfId][urr.URRID]
+		if entry == nil {
+			logger.PduSessLog.Warnf("[PDRAppendURRs]UPF=%s URR[%d] not in UrrTable", upfId, urr.URRID)
+			continue
+		}
+		if entry.State == RULE_REMOVE {
+			// A replacement path reused this URR before the removal was sent.
+			entry.State = entry.stateBeforeRemoval
+		}
+		entry.RefCount++
+		entry.PDRIDs = append(entry.PDRIDs, pdr.PDRID)
+		logger.PduSessLog.Tracef("[PDRAppendURRs] UPF=%s URR[%d] refCount=%d PDRs=%v",
+			upfId, urr.URRID, entry.RefCount, entry.PDRIDs)
+	}
+}
+
+// PDRReleaseURRs decrements the ref count for all URRs on a PDR.
+// URRs whose ref count reaches 0 are marked RULE_REMOVE so that
+// ActivateUPFSession will include them in the PFCP RemoveURR list.
+func (c *SMContext) PDRReleaseURRs(upfId string, pdr *PDR) {
+	if pdr == nil {
+		return
+	}
+	c.UrrTableMutex.Lock()
+	defer c.UrrTableMutex.Unlock()
+	for _, urr := range pdr.URR {
+		entry := c.UrrTable[upfId][urr.URRID]
+		if entry == nil {
+			logger.PduSessLog.Warnf("[PDRReleaseURRs] BUG: UPF=%s URR[%d] not in UrrTable", upfId, urr.URRID)
+			continue
+		}
+		entry.RefCount--
+		// remove this PDR from the tracking list
+		for i, id := range entry.PDRIDs {
+			if id == pdr.PDRID {
+				entry.PDRIDs = append(entry.PDRIDs[:i], entry.PDRIDs[i+1:]...)
+				break
+			}
+		}
+		if entry.RefCount <= 0 {
+			entry.stateBeforeRemoval = entry.State
+			entry.State = RULE_REMOVE
+			logger.PduSessLog.Tracef("[PDRReleaseURRs] UPF=%s URR[%d] refCount=0 → RULE_REMOVE", upfId, urr.URRID)
+		} else {
+			logger.PduSessLog.Tracef("[PDRReleaseURRs] UPF=%s URR[%d] refCount=%d PDRs=%v",
+				upfId, urr.URRID, entry.RefCount, entry.PDRIDs)
+		}
+	}
+}
+
+// DeleteFromUrrTable removes a URR entry from UrrTable after the PFCP RemoveURR
+// has been acknowledged and the UPF pool entry freed.
+func (c *SMContext) DeleteFromUrrTable(upfId string, urrID uint32) {
+	c.UrrTableMutex.Lock()
+	defer c.UrrTableMutex.Unlock()
+	if entries, ok := c.UrrTable[upfId]; ok {
+		delete(entries, urrID)
+	}
+	// Keep ChargingInfo for the final usage report, but stop querying a URR
+	// that has already been removed from the UPF.
+	if info := c.ChargingInfo[urrID]; info != nil && info.UpfId == upfId {
+		if info.VolumeLimitExpiryTimer != nil {
+			info.VolumeLimitExpiryTimer.Stop()
+			info.VolumeLimitExpiryTimer = nil
+		}
+		if info.EventLimitExpiryTimer != nil {
+			info.EventLimitExpiryTimer.Stop()
+			info.EventLimitExpiryTimer = nil
+		}
+	}
+}
+
+// Packet Detection. 7.5.2.2-2
+type PDI struct {
+	SourceInterface pfcptype.SourceInterface
+	LocalFTeid      *pfcptype.FTEID
+	NetworkInstance *pfcptype.NetworkInstance
+	UEIPAddress     *pfcptype.UEIPAddress
+	SDFFilter       *pfcptype.SDFFilter
+	ApplicationID   string
+}
+
+// Forwarding Action Rule. 7.5.2.3-1
+type FAR struct {
+	FARID uint32
+
+	ApplyAction          pfcptype.ApplyAction
+	ForwardingParameters *ForwardingParameters
+
+	BAR   *BAR
+	State RuleState
+}
+
+// Forwarding Parameters. 7.5.2.3-2
+type ForwardingParameters struct {
+	DestinationInterface pfcptype.DestinationInterface
+	NetworkInstance      *pfcptype.NetworkInstance
+	OuterHeaderCreation  *pfcptype.OuterHeaderCreation
+	ForwardingPolicyID   string
+	SendEndMarker        bool
+}
+
+// Buffering Action Rule 7.5.2.6-1
+type BAR struct {
+	BARID uint8
+
+	DownlinkDataNotificationDelay  pfcptype.DownlinkDataNotificationDelay
+	SuggestedBufferingPacketsCount pfcptype.SuggestedBufferingPacketsCount
+
+	State RuleState
+}
+
+// QoS Enhancement Rule
+type QER struct {
+	QERID uint32
+
+	// QFI is absent for QERs that only enforce a shared rate, such as Session-AMBR.
+	QFI *pfcptype.QFI
+
+	GateStatus *pfcptype.GateStatus
+	MBR        *pfcptype.MBR
+	GBR        *pfcptype.GBR
+
+	State RuleState
+}
+
+// appendQER avoids duplicate references when activation already attached the
+// default-flow QER before applying an explicit default-flow PCC rule.
+func appendQER(pdr *PDR, qer *QER) {
+	for _, current := range pdr.QER {
+		if current != nil && current.QERID == qer.QERID {
+			return
+		}
+	}
+	pdr.QER = append(pdr.QER, qer)
+}
+
+// A QER may be shared by both directions and several PCC datapaths. Its ID
+// remains allocated until the last PDR leaves the UPF's local pool.
+func (c *SMContext) releaseQER(upf *UPF, qer *QER) error {
+	inUse := false
+	upf.pdrPool.Range(func(_, value interface{}) bool {
+		for _, current := range value.(*PDR).QER {
+			if current != nil && current.QERID == qer.QERID {
+				inUse = true
+				return false
+			}
+		}
+		return true
+	})
+	if inUse || upf.GetQERById(qer.QERID) == nil {
+		return nil
+	}
+	if err := upf.RemoveQER(qer); err != nil {
+		return err
+	}
+	for key, id := range c.QerUpfMap {
+		if id == qer.QERID && strings.HasPrefix(key, upf.UUID()+":") {
+			delete(c.QerUpfMap, key)
+		}
+	}
+	if c.AMBRQerMap[upf.GetUUID()] == qer.QERID {
+		delete(c.AMBRQerMap, upf.GetUUID())
+	}
+	return nil
+}
+
+// Compare normalized rule values without IDs or transient installation states.
+func sameQERProfile(a, b *QER) bool {
+	return sameOptionalValue(a.QFI, b.QFI) && sameOptionalValue(a.GateStatus, b.GateStatus) &&
+		sameOptionalValue(a.MBR, b.MBR) && sameOptionalValue(a.GBR, b.GBR)
+}
+
+func sameOptionalValue[T comparable](a, b *T) bool {
+	if a == nil || b == nil {
+		return a == nil && b == nil
+	}
+	return *a == *b
+}
+
+// Each UPF owns its mutable rule fields; the compiled plan remains immutable.
+func cloneOptionalValue[T comparable](value *T) *T {
+	if value == nil {
+		return nil
+	}
+	copyValue := *value
+	return &copyValue
+}

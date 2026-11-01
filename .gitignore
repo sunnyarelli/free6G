@@ -1,0 +1,11 @@
+/build/
+6g-core/bin/
+6g-core/log/
+6g-core/webconsole/bin/
+6g-core/webconsole/public/
+6g-sim/build/
+6g-sim/cmake-build-release/
+*.pcap
+*.log
+.vscode/
+.idea/

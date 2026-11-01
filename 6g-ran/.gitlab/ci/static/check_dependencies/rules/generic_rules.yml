@@ -1,0 +1,123 @@
+# SPDX-FileCopyrightText: Copyright (C) 2021-2026 Software Radio Systems Limited
+# SPDX-FileCopyrightText: Copyright (C) 2026 OCUDU contributors
+# SPDX-License-Identifier: BSD-3-Clause-Open-MPI
+
+# Forbidden and allowed include dependencies for the OCUDU C++ tree, checked by
+# check_dependency_rules.py against a tree from gen_dependency_tree.py.
+#
+# Every rule here is green on the tree it was ported against. Never land a
+# rule that is red without `exempt` entries carrying issue links.
+#
+
+version: 1
+always_allowed:
+  - external/Backward/**
+  - external/TartanLlama/**
+  - external/cameron314/**
+  - external/fmt/**
+  - external/rigtorp/**
+rules:
+  # External rules
+  - id: uwebsockets-only-in-remote-control
+    kind: forbidden-edge
+    from:
+      - apps/**
+      - include/**
+      - lib/**
+      - tests/**
+    from_exclude: apps/services/remote_control/**
+    to: external/uWebSockets/**
+    transitive: true
+    reason: uWebSockets is an implementation detail of the remote control server; no other code may depend on it.
+  - id: nlohmann-forbidden-from
+    kind: forbidden-edge
+    from:
+      - apps/**
+      - include/**
+      - lib/**
+      - tests/**
+    from_exclude:
+      - apps/**
+      - include/ocudu/asn1/asn1_json_utils.h
+      - include/ocudu/asn1/e2sm/e2sm_ccc.h
+      - include/ocudu/support/json_utils.h
+      - lib/asn1/e2sm/e2sm_ccc.cpp
+      - lib/e2/e2sm/e2sm_ccc/**
+      - tests/integrationtests/du_high/ntn/**
+      - tests/test_doubles/du_high/*
+      - tests/unittests/apps/**
+    to: external/nlohmann/**
+    transitive: false
+    reason: nlohmann can only be used in apps folder.
+  - id: cli-forbidden-from
+    kind: forbidden-edge
+    from:
+      - apps/**
+      - include/**
+      - lib/**
+      - tests/**
+    from_exclude:
+      - apps/**
+      - include/ocudu/support/cli11_utils.h
+      - include/ocudu/support/config_parsers.h
+      - include/ocudu/support/config_schema.h
+      - lib/support/config_yaml.cpp
+      - tests/integrationtests/**
+      - tests/unittests/apps/helpers/config/config_yaml_schema_test.cpp
+      - tests/unittests/apps/units/flexible_du/du_high/du_high_config_autoderivation_test.cpp
+      - tests/unittests/apps/units/flexible_du/du_high/du_high_config_validator_test.cpp
+      - tests/unittests/apps/units/flexible_du/du_high/du_high_coreset0_config_test.cpp
+      - tests/unittests/apps/units/flexible_du/du_high/du_high_sib_config_test.cpp
+      - tests/unittests/apps/units/flexible_du/du_high/du_high_sr_config_test.cpp
+      - tests/unittests/apps/units/flexible_du/split_7_2/ru_ofh_config_cli11_schema_test.cpp
+      - tests/unittests/apps/units/o_cu_cp/cu_cp/cu_cp_unit_config_cli11_schema_test.cpp
+      - tests/unittests/apps/yaml_roundtrip_cu_cp_test.cpp
+      - tests/unittests/apps/yaml_roundtrip_cu_test.cpp
+      - tests/unittests/apps/yaml_roundtrip_cu_up_test.cpp
+      - tests/unittests/apps/yaml_roundtrip_du_test.cpp
+      - tests/unittests/apps/yaml_roundtrip_gnb_test.cpp
+      - tests/unittests/support/cli11_utils_schema_test.cpp
+      - tests/unittests/support/config_schema_test.cpp
+    to: external/CLI/**
+    transitive: true
+    reason: CLI can only be used in apps folder.
+  # Top level checks (lib, include, apps, tests).
+  - id: public-headers-must-not-include-private
+    kind: forbidden-edge
+    from: include/**
+    to: lib/**
+    reason: A public header that pulls in an implementation header exports private types to every consumer
+      and makes the private header impossible to change without breaking external code.
+  - id: subsystem-private-headers-are-private
+    kind: peer-isolation
+    peers: lib/*
+    reason: Subsystems interact only through their public headers under include/ocudu/. Reaching into
+      a sibling subsystem's lib/ directory couples to implementation details and blocks refactoring either
+      side independently.
+  - id: production-must-not-include-tests-or-apps
+    kind: forbidden-edge
+    from:
+      - include/**
+      - lib/**
+    to:
+      - apps/**
+      - tests/**
+    reason: 'Library code depending on test fixtures or application wiring inverts the build graph: the
+      library can no longer be built or shipped on its own.'
+  - id: apps-must-not-depend-on-tests
+    kind: forbidden-edge
+    from: apps/**
+    to: tests/**
+    reason: 'Shipped applications must not include test fixtures or doubles: it drags test-only code into
+      the release build and makes the app unbuildable when testing is disabled.'
+  - id: apps-must-use-public-headers
+    kind: forbidden-edge
+    from: apps/**
+    to: lib/**
+    reason: Applications compose subsystems through their public interfaces under include/ocudu/. Reaching
+      into lib/ pins an app to one subsystem's internal layout.
+  - id: public-headers-must-not-use-relative-includes
+    kind: no-relative-includes
+    from: include/**
+    reason: A public header using a relative '..' include ties its resolution to its own location in the
+      tree, rather than to the stable public path other code depends on.
